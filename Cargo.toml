@@ -1,0 +1,9 @@
+[package]
+name = "topdon_thermal_rs"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+opencv = "0.95.0"
+anyhow = "1.0.98"
