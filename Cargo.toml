@@ -2,8 +2,14 @@
 name = "topdon_thermal_rs"
 version = "0.1.0"
 edition = "2024"
-
-
+authors = ["limlug <limlug@limlug.de>"]
+description = "A Rust library to interface with the TOPDON TC001 dual thermal camera on Linux."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/limlug/topdon-thermal-rs"
+homepage = "https://github.com/limlug/topdon-thermal-rs"
+keywords = ["thermal", "camera", "topdon", "computer-vision", "opencv"]
+categories = ["hardware-support", "computer-vision"]
 [dependencies]
 opencv = "0.95.0"
 anyhow = "1.0.98"

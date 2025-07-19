@@ -76,17 +76,17 @@ use opencv::{
     videoio::{self, VideoCapture},
 };
 
-/// Represents a single frame captured from the camera, split into two parts.
+/// Represents a single frame captured from the camera, containing raw visual and thermal data.
 #[derive(Debug)]
 pub struct ThermalFrame {
-    /// The visual light image data.
+    /// The raw image data, likely in a 2-channel YUYV format.
     pub visual: Mat,
-    /// The raw thermal sensor data.
+    /// The raw thermal sensor data, misinterpreted by OpenCV as a 2-channel format.
     pub thermal: Mat,
 }
 
 impl ThermalFrame {
-    /// Processes the raw visual data and returns a 3-channel BGR `Mat`.
+    /// Processes the raw data and returns a 3-channel BGR `Mat`.
     ///
     /// This converts the camera's raw YUYV format into a standard BGR image
     /// that can be easily displayed or saved.
@@ -312,4 +312,63 @@ fn find_camera_by_id(vid: u16, pid: u16) -> Result<Vec<u32>> {
     }
 
     Ok(found_indices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opencv::core::{FileNode, FileStorage};
+
+    // Helper to load a Mat from OpenCV's YML format
+    fn load_mat_from_file(path: &str, node_name: &str) -> Result<Mat> {
+        // Corrected: Use the `core::FileStorage_READ` constant
+        let fs = FileStorage::new(path, core::FileStorage_READ, "")?;
+        let node: FileNode = fs.get(node_name)?;
+        let mat: Mat = node.mat()?;
+        Ok(mat)
+    }
+
+    #[test]
+    fn test_visual_bgr_processing() -> Result<()> {
+        let visual_mat = load_mat_from_file("./tests/test_data_visual.yml", "visual_mat")?;
+        assert!(!visual_mat.empty(), "Failed to load test visual data.");
+
+        let frame = ThermalFrame {
+            visual: visual_mat,
+            thermal: Mat::default(), // Not needed for this test
+        };
+
+        let bgr_result = frame.visual_bgr();
+        assert!(bgr_result.is_ok());
+
+        let bgr_mat = bgr_result.unwrap();
+        assert!(!bgr_mat.empty());
+        assert_eq!(bgr_mat.channels(), 3, "BGR image should have 3 channels.");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_thermal_colormapped_processing() -> Result<()> {
+        let thermal_mat = load_mat_from_file("./tests/test_data_thermal.yml", "thermal_mat")?;
+        assert!(!thermal_mat.empty(), "Failed to load test thermal data.");
+
+        let frame = ThermalFrame {
+            visual: Mat::default(), // Not needed for this test
+            thermal: thermal_mat,
+        };
+
+        let processed_result = frame.thermal_colormapped(512, 384);
+        assert!(processed_result.is_ok());
+
+        let processed_mat = processed_result.unwrap();
+        assert!(!processed_mat.empty());
+        assert_eq!(processed_mat.channels(), 3, "Colormapped image should have 3 channels.");
+
+        let size = processed_mat.size()?;
+        assert_eq!(size.width, 512);
+        assert_eq!(size.height, 384);
+
+        Ok(())
+    }
 }

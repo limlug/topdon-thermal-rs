@@ -1,5 +1,5 @@
 use anyhow::Result;
-use opencv::{highgui, prelude::*};
+use opencv::{highgui};
 use topdon_thermal_rs::ThermalCamera;
 
 fn main() -> Result<()> {
