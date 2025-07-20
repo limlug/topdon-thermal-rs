@@ -297,11 +297,15 @@ fn find_camera_by_id(vid: u16, pid: u16) -> Result<Vec<u32>> {
                         let file_pid = parts[1];
 
                         if file_vid.eq_ignore_ascii_case(&target_vid_str) && file_pid.eq_ignore_ascii_case(&target_pid_str) {
-                            let index_str = path.file_name().unwrap().to_str().unwrap().trim_start_matches("video");
-                            if let Ok(index) = index_str.parse::<u32>() {
-                                // Add the found index to our list and move to the next device.
-                                found_indices.push(index);
-                                break;
+                            if let Some(name_os_str) = path.file_name() {
+                                if let Some(name_str) = name_os_str.to_str() {
+                                    if let Some(index_str) = name_str.strip_prefix("video") {
+                                        if let Ok(index) = index_str.parse::<u32>() {
+                                            // Add the found index to our list and move to the next device.
+                                            found_indices.push(index);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
