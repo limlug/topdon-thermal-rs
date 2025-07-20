@@ -1,3 +1,4 @@
+use opencv::core::{min_max_loc, no_array};
 use anyhow::Result;
 use opencv::{highgui};
 use topdon_thermal_rs::ThermalCamera;
@@ -10,6 +11,11 @@ fn main() -> Result<()> {
     // USB ID for the camera
     const VENDOR_ID: u16 = 0x0bda;
     const PRODUCT_ID: u16 = 0x5830;
+
+    // !! IMPORTANT !!
+    // This calibration constant is a placeholder. You must find the correct value
+    // for your camera to get accurate temperature readings.
+    const TEMP_SCALE_FACTOR: f64 = 60.0;
 
     // Initialize the camera using the library
     let mut camera = ThermalCamera::new(VENDOR_ID, PRODUCT_ID)?;
@@ -31,6 +37,16 @@ fn main() -> Result<()> {
                 // 3. Get the processed colormapped thermal image from the frame
                 if let Ok(thermal) = frame_data.thermal_colormapped(THERMAL_WIDTH, THERMAL_HEIGHT) {
                     highgui::imshow("Thermal", &thermal)?;
+                }
+                // 4. Get the absolute temperature data
+                if let Ok(temps) = frame_data.temperatures(THERMAL_WIDTH, THERMAL_HEIGHT, TEMP_SCALE_FACTOR) {
+                    let mut min_temp = 0.0;
+                    let mut max_temp = 0.0;
+                    min_max_loc(&temps, Some(&mut min_temp), Some(&mut max_temp), None, None, &no_array())?;
+
+                    if let Ok(avg_temp) = frame_data.average_temperature(TEMP_SCALE_FACTOR) {
+                        print!("\rAvg: {:.2}°C, Min: {:.2}°C, Max: {:.2}°C   ", avg_temp, min_temp, max_temp);
+                    }
                 }
             }
             Err(e) => {

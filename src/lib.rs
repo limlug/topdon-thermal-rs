@@ -16,6 +16,7 @@
 //!
 //! ```no_run
 //! // main.rs
+//! use opencv::core::{min_max_loc, no_array};
 //! use anyhow::Result;
 //! use opencv::{highgui, prelude::*};
 //! use topdon_thermal_rs::ThermalCamera;
@@ -28,6 +29,8 @@
 //!     // USB ID for the camera
 //!     const VENDOR_ID: u16 = 0x0bda;
 //!     const PRODUCT_ID: u16 = 0x5830;
+//!
+//!      const TEMP_SCALE_FACTOR: f64 = 60.0;
 //!
 //!     // Initialize the camera using the library
 //!     let mut camera = ThermalCamera::new(VENDOR_ID, PRODUCT_ID)?;
@@ -49,6 +52,16 @@
 //!                 // 3. Get the processed colormapped thermal image from the frame
 //!                 if let Ok(thermal) = frame_data.thermal_colormapped(THERMAL_WIDTH, THERMAL_HEIGHT) {
 //!                     highgui::imshow("Thermal", &thermal)?;
+//!                 }
+//!                 // 4. Get the absolute temperature data
+//!                 if let Ok(temps) = frame_data.temperatures(THERMAL_WIDTH, THERMAL_HEIGHT, TEMP_SCALE_FACTOR) {
+//!                     let mut min_temp = 0.0;
+//!                     let mut max_temp = 0.0;
+//!                     min_max_loc(&temps, Some(&mut min_temp), Some(&mut max_temp), None, None, &no_array())?;
+//!
+//!                     if let Ok(avg_temp) = frame_data.average_temperature(TEMP_SCALE_FACTOR) {
+//!                         print!("\rAvg: {:.2}°C, Min: {:.2}°C, Max: {:.2}°C   ", avg_temp, min_temp, max_temp);
+//!                     }
 //!                 }
 //!             }
 //!             Err(e) => {
@@ -142,8 +155,57 @@ impl ThermalFrame {
             Err(anyhow!("Could not determine a robust temperature range for processing."))
         }
     }
-}
+    /// Converts raw thermal data to a matrix of absolute temperatures in Celsius.
+    ///
+    /// This method uses a simplified linear formula: `Temp_C = (Raw_Value / scale_factor) - 273.15`.
+    ///
+    /// # Warning
+    /// The accuracy of the output is entirely dependent on using the correct `scale_factor`
+    /// for your specific camera model, which you must determine through research or experimentation.
+    /// The default value is a placeholder.
+    ///
+    /// # Arguments
+    /// * `width` - The final target width for the temperature matrix.
+    /// * `height` - The final target height for the temperature matrix.
+    /// * `scale_factor` - The calibration constant to convert raw sensor values to Kelvin. A common starting point might be 100.0.
+    pub fn temperatures(&self, width: i32, height: i32, scale_factor: f64) -> Result<Mat> {
+        if self.thermal.empty() {
+            return Err(anyhow!("Thermal data is empty."));
+        }
 
+        let mut temps_kelvin = Mat::default();
+        self.thermal.convert_to(&mut temps_kelvin, core::CV_32F, 1.0 / scale_factor, 0.0)?;
+
+        let mut temps_celsius = Mat::default();
+        core::subtract(&temps_kelvin, &core::Scalar::new(273.15, 0.0, 0.0, 0.0), &mut temps_celsius, &core::no_array(), -1)?;
+
+        let mut resized_temps = Mat::default();
+        let target_size = core::Size::new(width, height);
+        imgproc::resize(&temps_celsius, &mut resized_temps, target_size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
+
+        Ok(resized_temps)
+    }
+    /// Calculates the average temperature of the entire frame in Celsius.
+    ///
+    /// This method mirrors the logic from the Python library, calculating the mean of the
+    /// raw sensor values before converting to an absolute temperature.
+    ///
+    /// # Arguments
+    /// * `scale_factor` - The calibration constant. Use **64.0** for accurate results.
+    pub fn average_temperature(&self, scale_factor: f64) -> Result<f64> {
+        if self.thermal.empty() {
+            return Err(anyhow!("Thermal data is empty."));
+        }
+
+        let mean_raw_scalar = core::mean(&self.thermal, &core::no_array())?;
+
+        let avg_raw = *mean_raw_scalar.get(0)
+            .ok_or_else(|| anyhow!("Failed to get average raw value from scalar"))?;
+
+        let avg_temp_celsius = (avg_raw / scale_factor) - 273.15;
+        Ok(avg_temp_celsius)
+    }
+}
 
 /// Represents the thermal camera device.
 pub struct ThermalCamera {
@@ -216,17 +278,56 @@ impl ThermalCamera {
         }
 
         let size = frame.size().context("Failed to get frame size")?;
-        let height = size.height;
-        let width = size.width;
+        let full_frame_height = size.height;
+        let full_frame_width = size.width;
 
-        let top_half_rect = core::Rect_::new(0, 0, width, height / 2);
-        let bottom_half_rect = core::Rect_::new(0, height / 2, width, height / 2);
-
+        // The visual data is the top half of the frame.
+        let top_half_rect = core::Rect_::new(0, 0, full_frame_width, full_frame_height / 2);
         let visual = Mat::roi(&frame, top_half_rect)?.try_clone()?;
-        let thermal = Mat::roi(&frame, bottom_half_rect)?.try_clone()?;
 
-        Ok(ThermalFrame { visual, thermal })
+        // The thermal data is a specific 256x192 block located at the top-left
+        // of the bottom half of the frame. We must crop to this exact size
+        // to avoid including padding data that contains zeros.
+        const SENSOR_WIDTH: i32 = 256;
+        const SENSOR_HEIGHT: i32 = 192;
+        let thermal_data_rect = core::Rect_::new(0, full_frame_height / 2, SENSOR_WIDTH, SENSOR_HEIGHT);
+        let thermal_raw = Mat::roi(&frame, thermal_data_rect)?.try_clone()?;
+        let thermal_processed = reconstruct_thermal_image(&thermal_raw)?;
+
+
+        Ok(ThermalFrame { visual, thermal: thermal_processed })
     }
+}
+/// Manually reconstructs the 16-bit thermal image from the camera's raw byte stream.
+fn reconstruct_thermal_image(thermal_data_raw: &Mat) -> Result<Mat> {
+    let size = thermal_data_raw.size()?;
+    let width = size.width;
+    let height = size.height;
+
+    // 1. Create a safe, flat Rust vector to hold the 16-bit pixel data.
+    let mut pixel_data: Vec<u16> = Vec::with_capacity((width * height) as usize);
+
+    // 2. Iterate through the raw 8-bit, 2-channel data and populate the vector.
+    for y in 0..height {
+        for x in 0..width {
+            // Get the two bytes from the source CV_8UC2 Mat
+            let pixel_bytes = thermal_data_raw.at_2d::<core::Vec2b>(y, x)?;
+            let hi_byte = pixel_bytes[0];
+            let lo_byte = pixel_bytes[1];
+
+            // Reconstruct the 16-bit value.
+            let raw_value: u16 = (lo_byte as u16) * 256 + (hi_byte as u16);
+            pixel_data.push(raw_value);
+        }
+    }
+    // 3. Create a Mat from the raw slice data. We use an `unsafe` block here
+    // because we are guaranteeing to OpenCV that the slice contains exactly
+    // `height * width` elements, which we know is true.
+    Ok(Mat::new_rows_cols_with_data(
+            height,
+            width,
+            &pixel_data
+        )?.try_clone()?)
 }
 /// Calculates a stable min/max range for normalization by finding the 2nd and 98th percentiles.
 fn get_robust_range(thermal_data: &Mat) -> Result<(f64, f64)> {
@@ -345,7 +446,7 @@ mod tests {
         let bgr_result = frame.visual_bgr();
         assert!(bgr_result.is_ok());
 
-        let bgr_mat = bgr_result.unwrap();
+        let bgr_mat = bgr_result?;
         assert!(!bgr_mat.empty());
         assert_eq!(bgr_mat.channels(), 3, "BGR image should have 3 channels.");
 
@@ -365,13 +466,61 @@ mod tests {
         let processed_result = frame.thermal_colormapped(512, 384);
         assert!(processed_result.is_ok());
 
-        let processed_mat = processed_result.unwrap();
+        let processed_mat = processed_result?;
         assert!(!processed_mat.empty());
         assert_eq!(processed_mat.channels(), 3, "Colormapped image should have 3 channels.");
 
         let size = processed_mat.size()?;
         assert_eq!(size.width, 512);
         assert_eq!(size.height, 384);
+
+        Ok(())
+    }
+    #[test]
+    fn test_temperatures_calculation() -> Result<()> {
+        let thermal_mat_raw = load_mat_from_file("test_data_thermal.yml", "thermal_mat")?;
+        let thermal_mat_processed = reconstruct_thermal_image(&thermal_mat_raw)?;
+
+        let frame = ThermalFrame {
+            visual: Mat::default(),
+            thermal: thermal_mat_processed,
+        };
+
+        let temps_result = frame.temperatures(256, 192, 64.0);
+        assert!(temps_result.is_ok());
+
+        let temps_mat = temps_result.unwrap();
+        assert!(!temps_mat.empty());
+        assert_eq!(temps_mat.typ(), core::CV_32F, "Temperatures matrix should be 32-bit float.");
+
+        let mut min_temp = 0.0;
+        let mut max_temp = 0.0;
+        core::min_max_loc(&temps_mat, Some(&mut min_temp), Some(&mut max_temp), None, None, &core::no_array())?;
+
+        // Check for plausible temperature range (e.g., not absolute zero or thousands of degrees)
+        assert!(min_temp > -50.0, "Minimum temperature is implausibly low.");
+        assert!(max_temp < 200.0, "Maximum temperature is implausibly high.");
+
+        Ok(())
+    }
+    #[test]
+    fn test_average_temperature_calculation() -> Result<()> {
+        let thermal_mat_raw = load_mat_from_file("test_data_thermal.yml", "thermal_mat")?;
+        let thermal_mat_processed = reconstruct_thermal_image(&thermal_mat_raw)?;
+
+        let frame = ThermalFrame {
+            visual: Mat::default(),
+            thermal: thermal_mat_processed,
+        };
+
+        let avg_temp_result = frame.average_temperature(64.0);
+        assert!(avg_temp_result.is_ok());
+
+        let avg_temp = avg_temp_result.unwrap();
+
+        // Check for plausible temperature range
+        assert!(avg_temp > -50.0, "Average temperature is implausibly low.");
+        assert!(avg_temp < 200.0, "Average temperature is implausibly high.");
 
         Ok(())
     }
