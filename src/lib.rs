@@ -19,10 +19,13 @@
 //! use opencv::core::{min_max_loc, no_array};
 //! use anyhow::Result;
 //! use opencv::{highgui, prelude::*};
-//! use topdon_thermal_rs::ThermalCamera;
+//! use topdon_thermal_rs::{Colormap, ThermalCamera};
+//! use std::str::FromStr;
 //!
 //! fn main() -> Result<()> {
-//!     // Final target resolution for the processed thermal image
+//!
+//!
+//! // Final target resolution for the processed thermal image
 //!     const THERMAL_WIDTH: i32 = 512;
 //!     const THERMAL_HEIGHT: i32 = 384;
 //!
@@ -30,7 +33,10 @@
 //!     const VENDOR_ID: u16 = 0x0bda;
 //!     const PRODUCT_ID: u16 = 0x5830;
 //!
-//!      const TEMP_SCALE_FACTOR: f64 = 60.0;
+//!     const TEMP_SCALE_FACTOR: f64 = 60.0;
+//!     const COLORMAP: &str = "JET";
+//!     const BLUR_RADIUS: i32 = 10;
+//!     const CONTRAST: f64 = 1.0;
 //!
 //!     // Initialize the camera using the library
 //!     let mut camera = ThermalCamera::new(VENDOR_ID, PRODUCT_ID)?;
@@ -50,7 +56,8 @@
 //!                 }
 //!
 //!                 // 3. Get the processed colormapped thermal image from the frame
-//!                 if let Ok(thermal) = frame_data.thermal_colormapped(THERMAL_WIDTH, THERMAL_HEIGHT) {
+//!                 let colormap = Colormap::from_str(COLORMAP)?;
+//!                 if let Ok(thermal) = frame_data.thermal_colormapped(THERMAL_WIDTH, THERMAL_HEIGHT, Some(colormap), BLUR_RADIUS, CONTRAST) {
 //!                     highgui::imshow("Thermal", &thermal)?;
 //!                 }
 //!                 // 4. Get the absolute temperature data
@@ -88,6 +95,93 @@ use opencv::{
     prelude::*,
     videoio::{self, VideoCapture},
 };
+use std::str::FromStr;
+
+/// Represents the available OpenCV colormaps for thermal imaging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Colormap {
+    Autumn,
+    Bone,
+    Jet,
+    Winter,
+    Rainbow,
+    Ocean,
+    Summer,
+    Spring,
+    Cool,
+    Hsv,
+    Pink,
+    Hot,
+    Parula,
+    Magma,
+    Inferno,
+    Plasma,
+    Viridis,
+    Cividis,
+    Twilight,
+    TwilightShifted,
+    Turbo,
+}
+impl Colormap {
+    /// Converts the enum variant to its corresponding OpenCV integer ID.
+    fn to_cv_id(&self) -> i32 {
+        match self {
+            Colormap::Autumn => imgproc::COLORMAP_AUTUMN,
+            Colormap::Bone => imgproc::COLORMAP_BONE,
+            Colormap::Jet => imgproc::COLORMAP_JET,
+            Colormap::Winter => imgproc::COLORMAP_WINTER,
+            Colormap::Rainbow => imgproc::COLORMAP_RAINBOW,
+            Colormap::Ocean => imgproc::COLORMAP_OCEAN,
+            Colormap::Summer => imgproc::COLORMAP_SUMMER,
+            Colormap::Spring => imgproc::COLORMAP_SPRING,
+            Colormap::Cool => imgproc::COLORMAP_COOL,
+            Colormap::Hsv => imgproc::COLORMAP_HSV,
+            Colormap::Pink => imgproc::COLORMAP_PINK,
+            Colormap::Hot => imgproc::COLORMAP_HOT,
+            Colormap::Parula => imgproc::COLORMAP_PARULA,
+            Colormap::Magma => imgproc::COLORMAP_MAGMA,
+            Colormap::Inferno => imgproc::COLORMAP_INFERNO,
+            Colormap::Plasma => imgproc::COLORMAP_PLASMA,
+            Colormap::Viridis => imgproc::COLORMAP_VIRIDIS,
+            Colormap::Cividis => imgproc::COLORMAP_CIVIDIS,
+            Colormap::Twilight =>  imgproc::COLORMAP_TWILIGHT,
+            Colormap::TwilightShifted =>  imgproc::COLORMAP_TWILIGHT_SHIFTED,
+            Colormap::Turbo => imgproc::COLORMAP_TURBO,
+        }
+    }
+}
+/// Allows parsing a string (e.g., "JET") into a `Colormap` enum.
+impl FromStr for Colormap {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "AUTUMN" => Ok(Colormap::Autumn),
+            "BONE" => Ok(Colormap::Bone),
+            "JET" => Ok(Colormap::Jet),
+            "WINTER" => Ok(Colormap::Winter),
+            "RAINBOW" => Ok(Colormap::Rainbow),
+            "OCEAN" => Ok(Colormap::Ocean),
+            "SUMMER" => Ok(Colormap::Summer),
+            "SPRING" => Ok(Colormap::Spring),
+            "COOL" => Ok(Colormap::Cool),
+            "HSV" => Ok(Colormap::Hsv),
+            "PINK" => Ok(Colormap::Pink),
+            "HOT" => Ok(Colormap::Hot),
+            "PARULA" => Ok(Colormap::Parula),
+            "MAGMA" => Ok(Colormap::Magma),
+            "INFERNO" => Ok(Colormap::Inferno),
+            "PLASMA" => Ok(Colormap::Plasma),
+            "VIRIDIS" => Ok(Colormap::Viridis),
+            "CIVIDIS" => Ok(Colormap::Cividis),
+            "TWILIGHT" => Ok(Colormap::Twilight),
+            "TWILIGHTSHIFTED" | "TWILIGHT_SHIFTED" => Ok(Colormap::TwilightShifted),
+            "TURBO" => Ok(Colormap::Turbo),
+            _ => Err(anyhow!("'{}' is not a valid colormap name.", s)),
+        }
+    }
+}
+
 
 /// Represents a single frame captured from the camera, containing raw visual and thermal data.
 #[derive(Debug)]
@@ -124,7 +218,10 @@ impl ThermalFrame {
     /// # Arguments
     /// * `width` - The final target width for the thermal image.
     /// * `height` - The final target height for the thermal image.
-    pub fn thermal_colormapped(&self, width: i32, height: i32) -> Result<Mat> {
+    /// * `colormap` - An `Option<Colormap>` to apply. If `None`, a grayscale image is returned.
+    /// * `blur_radius` - The size of the Kernel to blur the image
+    /// * `contrast` - A float multiplier for adjusting contrast. `1.0` is default.
+    pub fn thermal_colormapped(&self, width: i32, height: i32, colormap: Option<Colormap>, blur_radius: i32, contrast: f64) -> Result<Mat> {
         if self.thermal.empty() {
             return Err(anyhow!("Thermal data is empty."));
         }
@@ -135,7 +232,7 @@ impl ThermalFrame {
         // 2. Get a stable temperature range, ignoring outliers
         if let Ok((min, max)) = get_robust_range(&thermal_1ch) {
             let mut scaled_thermal = Mat::default();
-            let alpha = 255.0 / (max - min);
+            let alpha = 255.0 / (max - min) * contrast;
             let beta = -min * alpha;
 
             // 3. Scale to 8-bit and apply the robust range
@@ -143,14 +240,25 @@ impl ThermalFrame {
 
             // 4. Apply colormap
             let mut colormapped_thermal = Mat::default();
-            imgproc::apply_color_map(&scaled_thermal, &mut colormapped_thermal, imgproc::COLORMAP_INFERNO)?;
-
+            if let Some(map) = colormap {
+                // Apply the selected colormap
+                imgproc::apply_color_map(&scaled_thermal, &mut colormapped_thermal, map.to_cv_id())?;
+            } else {
+                // If no colormap, convert the 8-bit grayscale to 3-channel BGR
+                imgproc::cvt_color(&scaled_thermal, &mut colormapped_thermal, imgproc::COLOR_GRAY2BGR, 0)?;
+            }
             // 5. Resize to final dimensions
             let mut resized_thermal = Mat::default();
             let target_size = core::Size::new(width, height);
             imgproc::resize(&colormapped_thermal, &mut resized_thermal, target_size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
-
-            Ok(resized_thermal)
+            if blur_radius > 0 {
+                let mut blurred_image = Mat::default();
+                let kernel_size = core::Size::new(blur_radius, blur_radius);
+                imgproc::gaussian_blur(&resized_thermal, &mut blurred_image, kernel_size, 0.0, 0.0, core::BORDER_DEFAULT)?;
+                Ok(blurred_image)
+            } else {
+                Ok(resized_thermal)
+            }
         } else {
             Err(anyhow!("Could not determine a robust temperature range for processing."))
         }
@@ -204,6 +312,20 @@ impl ThermalFrame {
 
         let avg_temp_celsius = (avg_raw / scale_factor) - 273.15;
         Ok(avg_temp_celsius)
+    }
+    pub fn temperature_at(&self, x: i32, y: i32, scale_factor: f64) -> Result<f64> {
+        if self.thermal.empty() {
+            return Err(anyhow!("Thermal data is empty."));
+        }
+        let raw_value = *self.thermal.at_2d::<u16>(y, x)?;
+        let temp_celsius = (raw_value as f64 / scale_factor) - 273.15;
+        Ok(temp_celsius)
+    }
+    pub fn min_max_locations(&self) -> Result<(core::Point, core::Point)> {
+        let mut min_loc = core::Point::default();
+        let mut max_loc = core::Point::default();
+        core::min_max_loc(&self.thermal, None, None, Some(&mut min_loc), Some(&mut max_loc), &core::no_array())?;
+        Ok((min_loc, max_loc))
     }
 }
 
@@ -320,9 +442,7 @@ fn reconstruct_thermal_image(thermal_data_raw: &Mat) -> Result<Mat> {
             pixel_data.push(raw_value);
         }
     }
-    // 3. Create a Mat from the raw slice data. We use an `unsafe` block here
-    // because we are guaranteeing to OpenCV that the slice contains exactly
-    // `height * width` elements, which we know is true.
+    // 3. Create a Mat from the raw slice data.
     Ok(Mat::new_rows_cols_with_data(
             height,
             width,
@@ -457,13 +577,15 @@ mod tests {
     fn test_thermal_colormapped_processing() -> Result<()> {
         let thermal_mat = load_mat_from_file("./tests/test_data_thermal.yml", "thermal_mat")?;
         assert!(!thermal_mat.empty(), "Failed to load test thermal data.");
-
+        const COLORMAP: &str = "JET";
+        const BLUR_RADIUS: i32 = 10;
+        const CONTRAST: f64 = 1.0;
         let frame = ThermalFrame {
             visual: Mat::default(), // Not needed for this test
             thermal: thermal_mat,
         };
-
-        let processed_result = frame.thermal_colormapped(512, 384);
+        let colormap = Colormap::from_str(COLORMAP)?;
+        let processed_result = frame.thermal_colormapped(512, 384, Some(colormap), BLUR_RADIUS, CONTRAST);
         assert!(processed_result.is_ok());
 
         let processed_mat = processed_result?;
@@ -489,9 +611,9 @@ mod tests {
         let temps_result = frame.temperatures(256, 192, 64.0);
         assert!(temps_result.is_ok());
 
-        let temps_mat = temps_result.unwrap();
+        let temps_mat = temps_result?;
         assert!(!temps_mat.empty());
-        assert_eq!(temps_mat.typ(), core::CV_32F, "Temperatures matrix should be 32-bit float.");
+        assert_eq!(temps_mat.typ(), core::CV_32F, "Temperature matrix should be 32-bit float.");
 
         let mut min_temp = 0.0;
         let mut max_temp = 0.0;
@@ -516,7 +638,7 @@ mod tests {
         let avg_temp_result = frame.average_temperature(64.0);
         assert!(avg_temp_result.is_ok());
 
-        let avg_temp = avg_temp_result.unwrap();
+        let avg_temp = avg_temp_result?;
 
         // Check for plausible temperature range
         assert!(avg_temp > -50.0, "Average temperature is implausibly low.");

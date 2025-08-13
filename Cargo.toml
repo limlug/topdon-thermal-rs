@@ -11,5 +11,5 @@ homepage = "https://github.com/limlug/topdon-thermal-rs"
 keywords = ["thermal", "camera", "topdon", "computer-vision", "opencv"]
 categories = ["hardware-support", "computer-vision"]
 [dependencies]
-opencv = "0.95.0"
+opencv = "0.95.1"
 anyhow = "1.0.98"

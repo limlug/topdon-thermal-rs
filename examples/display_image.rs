@@ -1,7 +1,8 @@
 use opencv::core::{min_max_loc, no_array};
 use anyhow::Result;
 use opencv::{highgui};
-use topdon_thermal_rs::ThermalCamera;
+use topdon_thermal_rs::{Colormap, ThermalCamera};
+use std::str::FromStr;
 
 fn main() -> Result<()> {
     // Final target resolution for the processed thermal image
@@ -16,9 +17,11 @@ fn main() -> Result<()> {
     // This calibration constant is a placeholder. You must find the correct value
     // for your camera to get accurate temperature readings.
     const TEMP_SCALE_FACTOR: f64 = 60.0;
-
+    const COLORMAP: &str = "JET";
+    const BLUR_RADIUS: i32 = 10;
     // Initialize the camera using the library
     let mut camera = ThermalCamera::new(VENDOR_ID, PRODUCT_ID)?;
+    let mut contrast_level = 1.0;
 
     highgui::named_window("Visual", highgui::WINDOW_AUTOSIZE)?;
     highgui::named_window("Thermal", highgui::WINDOW_AUTOSIZE)?;
@@ -35,7 +38,8 @@ fn main() -> Result<()> {
                 }
 
                 // 3. Get the processed colormapped thermal image from the frame
-                if let Ok(thermal) = frame_data.thermal_colormapped(THERMAL_WIDTH, THERMAL_HEIGHT) {
+                let colormap = Colormap::from_str(COLORMAP)?;
+                if let Ok(thermal) = frame_data.thermal_colormapped(THERMAL_WIDTH, THERMAL_HEIGHT, Some(colormap), BLUR_RADIUS, contrast_level) {
                     highgui::imshow("Thermal", &thermal)?;
                 }
                 // 4. Get the absolute temperature data
@@ -60,6 +64,17 @@ fn main() -> Result<()> {
         if key == 'q' as i32 || key == 27 {
             break;
         }
+
+        match key {
+            // Increase contrast
+            x if x == 'f' as i32 => contrast_level += 0.1,
+            // Decrease contrast
+            x if x == 'v' as i32 => contrast_level -= 0.1,
+            _ => (),
+        }
+
+        // Clamp the contrast to a reasonable range
+        contrast_level = contrast_level.max(0.1).min(3.0);
     }
 
     Ok(())
