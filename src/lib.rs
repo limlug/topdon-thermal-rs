@@ -35,7 +35,7 @@
 //!
 //!     const TEMP_SCALE_FACTOR: f64 = 60.0;
 //!     const COLORMAP: &str = "JET";
-//!     const BLUR_RADIUS: i32 = 10;
+//!     const BLUR_RADIUS: u32 = 10;
 //!     const CONTRAST: f64 = 1.0;
 //!
 //!     // Initialize the camera using the library
@@ -191,7 +191,13 @@ pub struct ThermalFrame {
     /// The raw thermal sensor data, misinterpreted by OpenCV as a 2-channel format.
     pub thermal: Mat,
 }
-
+/// Holds the temperature analysis results for a specific Region of Interest (ROI).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoiAnalysis {
+    pub min_temp: f64,
+    pub max_temp: f64,
+    pub avg_temp: f64,
+}
 impl ThermalFrame {
     /// Processes the raw data and returns a 3-channel BGR `Mat`.
     ///
@@ -221,7 +227,7 @@ impl ThermalFrame {
     /// * `colormap` - An `Option<Colormap>` to apply. If `None`, a grayscale image is returned.
     /// * `blur_radius` - The size of the Kernel to blur the image
     /// * `contrast` - A float multiplier for adjusting contrast. `1.0` is default.
-    pub fn thermal_colormapped(&self, width: i32, height: i32, colormap: Option<Colormap>, blur_radius: i32, contrast: f64) -> Result<Mat> {
+    pub fn thermal_colormapped(&self, width: i32, height: i32, colormap: Option<Colormap>, blur_radius: u32, contrast: f64) -> Result<Mat> {
         if self.thermal.empty() {
             return Err(anyhow!("Thermal data is empty."));
         }
@@ -253,8 +259,8 @@ impl ThermalFrame {
             imgproc::resize(&colormapped_thermal, &mut resized_thermal, target_size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
             if blur_radius > 0 {
                 let mut blurred_image = Mat::default();
-                let kernel_size = core::Size::new(blur_radius, blur_radius);
-                imgproc::gaussian_blur(&resized_thermal, &mut blurred_image, kernel_size, 0.0, 0.0, core::BORDER_DEFAULT)?;
+                let kernel_size = (blur_radius * 2 + 1) as i32;
+                imgproc::gaussian_blur(&resized_thermal, &mut blurred_image, core::Size::new(kernel_size, kernel_size), 0.0, 0.0, core::BORDER_DEFAULT)?;
                 Ok(blurred_image)
             } else {
                 Ok(resized_thermal)
@@ -326,6 +332,83 @@ impl ThermalFrame {
         let mut max_loc = core::Point::default();
         core::min_max_loc(&self.thermal, None, None, Some(&mut min_loc), Some(&mut max_loc), &core::no_array())?;
         Ok((min_loc, max_loc))
+    }
+    /// Analyzes a rectangular Region of Interest (ROI) on the thermal image.
+    ///
+    /// This function calculates the minimum, maximum, and average temperatures
+    /// exclusively within the provided rectangle.
+    ///
+    /// # Arguments
+    /// * `roi` - A `core::Rect` defining the region to analyze on the thermal image.
+    /// * `scale_factor` - The calibration constant. Use **64.0** for accurate results.
+    pub fn analyze_roi(&self, roi: core::Rect, scale_factor: f64) -> Result<RoiAnalysis> {
+        if self.thermal.empty() {
+            return Err(anyhow!("Thermal data is empty."));
+        }
+
+        // Create a new Mat that is a view into the specified ROI of the thermal image.
+        let roi_mat = Mat::roi(&self.thermal, roi)?;
+
+        // Calculate min and max raw values within the ROI.
+        let mut min_raw = 0.0;
+        let mut max_raw = 0.0;
+        core::min_max_loc(&roi_mat, Some(&mut min_raw), Some(&mut max_raw), None, None, &core::no_array())?;
+
+        // Calculate the average raw value within the ROI.
+        let avg_raw_scalar = core::mean(&roi_mat, &core::no_array())?;
+        let avg_raw = *avg_raw_scalar.get(0)
+            .ok_or_else(|| anyhow!("Failed to get average raw value from ROI scalar"))?;
+
+        // Convert the raw statistical values to Celsius.
+        let analysis = RoiAnalysis {
+            min_temp: (min_raw / scale_factor) - 273.15,
+            max_temp: (max_raw / scale_factor) - 273.15,
+            avg_temp: (avg_raw / scale_factor) - 273.15,
+        };
+
+        Ok(analysis)
+    }
+    /// Creates an isotherm image, highlighting pixels within a specific temperature range.
+    ///
+    /// This function generates an image where only the areas corresponding to the given
+    /// temperature range are visible, overlaid on a colormapped version of the thermal image.
+    ///
+    /// # Arguments
+    /// * `width` - The final target width for the isotherm image.
+    /// * `height` - The final target height for the isotherm image.
+    /// * `min_temp` - The minimum temperature of the isotherm range in Celsius.
+    /// * `max_temp` - The maximum temperature of the isotherm range in Celsius.
+    /// * `colormap` - The `Colormap` to apply to the highlighted region.
+    /// * `scale_factor` - The calibration constant. Use **64.0** for accurate results.
+    pub fn isotherm(
+        &self,
+        width: i32,
+        height: i32,
+        min_temp: f64,
+        max_temp: f64,
+        colormap: Colormap,
+        scale_factor: f64,
+    ) -> Result<Mat> {
+        // 1. Get the full matrix of absolute temperatures.
+        let temps_celsius = self.temperatures(width, height, scale_factor)?;
+
+        // 2. Create a binary mask where pixels within the temp range are white.
+        let mut mask = Mat::default();
+        let lower_bound = core::Scalar::new(min_temp, 0.0, 0.0, 0.0);
+        let upper_bound = core::Scalar::new(max_temp, 0.0, 0.0, 0.0);
+        core::in_range(&temps_celsius, &lower_bound, &upper_bound, &mut mask)?;
+
+        // 3. Get a fully colormapped version of the thermal image.
+        // We pass `None` for contrast to avoid applying it twice.
+        let colormapped_image = self.thermal_colormapped(width, height, Some(colormap), 0, 1.0)?;
+
+        // 4. Apply the mask to the colormapped image.
+        // This will make all pixels outside the range black
+
+        let mut isotherm_image = Mat::new_rows_cols_with_default(height, width, colormapped_image.typ(), core::Scalar::all(0.0))?;
+        core::bitwise_and(&colormapped_image, &colormapped_image, &mut isotherm_image, &mask)?;
+
+        Ok(isotherm_image)
     }
 }
 
@@ -578,7 +661,7 @@ mod tests {
         let thermal_mat = load_mat_from_file("./tests/test_data_thermal.yml", "thermal_mat")?;
         assert!(!thermal_mat.empty(), "Failed to load test thermal data.");
         const COLORMAP: &str = "JET";
-        const BLUR_RADIUS: i32 = 10;
+        const BLUR_RADIUS: u32 = 10;
         const CONTRAST: f64 = 1.0;
         let frame = ThermalFrame {
             visual: Mat::default(), // Not needed for this test
