@@ -33,9 +33,6 @@ fn main() -> Result<()> {
     const ISO_MIN_TEMP: f64 = 30.0;
     const ISO_MAX_TEMP: f64 = 55.0;
 
-    // Define a Region of Interest (ROI) to analyze.
-    // This rectangle is on the original 256x192 thermal sensor resolution.
-    let roi_rect = core::Rect::new(80, 60, 100, 80); // x, y, width, height
 
     println!("📷 Camera initialized.");
     println!("--- Controls ---");
