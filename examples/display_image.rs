@@ -22,7 +22,10 @@ fn main() -> Result<()> {
     const BLUR_RADIUS: u32 = 2;
     const OUTPUT_DIR: &str = "output";
     // Initialize the camera using the library
-    let mut camera = ThermalCamera::new(VENDOR_ID, PRODUCT_ID)?;
+    let mut camera = ThermalCamera::builder()
+        .vendor_id(VENDOR_ID)
+        .product_id(PRODUCT_ID)
+        .build()?;
     let mut contrast_level = 1.0;
     let mut video_writer: Option<videoio::VideoWriter> = None;
 

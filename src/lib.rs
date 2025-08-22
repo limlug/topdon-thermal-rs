@@ -404,11 +404,42 @@ impl ThermalFrame {
 
         // 4. Apply the mask to the colormapped image.
         // This will make all pixels outside the range black
-
         let mut isotherm_image = Mat::new_rows_cols_with_default(height, width, colormapped_image.typ(), core::Scalar::all(0.0))?;
         core::bitwise_and(&colormapped_image, &colormapped_image, &mut isotherm_image, &mask)?;
 
         Ok(isotherm_image)
+    }
+}
+#[derive(Default)]
+pub struct ThermalCameraBuilder {
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
+}
+
+impl ThermalCameraBuilder {
+    /// Sets the USB Vendor ID for the camera to find.
+    pub fn vendor_id(mut self, vid: u16) -> Self {
+        self.vendor_id = Some(vid);
+        self
+    }
+
+    /// Sets the USB Product ID for the camera to find.
+    pub fn product_id(mut self, pid: u16) -> Self {
+        self.product_id = Some(pid);
+        self
+    }
+
+    /// Builds the `ThermalCamera` instance.
+    ///
+    /// This method consumes the builder and attempts to find and initialize
+    /// the camera with the provided configuration.
+    ///
+    /// # Errors
+    /// Returns an error if the vendor ID or product ID were not set.
+    pub fn build(self) -> Result<ThermalCamera> {
+        let vid = self.vendor_id.context("Vendor ID must be set")?;
+        let pid = self.product_id.context("Product ID must be set")?;
+        ThermalCamera::new(vid, pid)
     }
 }
 
@@ -418,6 +449,23 @@ pub struct ThermalCamera {
 }
 
 impl ThermalCamera {
+    /// Returns a new `ThermalCameraBuilder` to construct a camera instance.
+    ///
+    /// This is the recommended way to create a new `ThermalCamera`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use topdon_thermal_rs::ThermalCamera;
+    ///
+    /// let camera = ThermalCamera::builder()
+    ///     .vendor_id(0x0bda)
+    ///     .product_id(0x5830)
+    ///     .build();
+    /// ```
+    pub fn builder() -> ThermalCameraBuilder {
+        ThermalCameraBuilder::default()
+    }
+
     /// Creates a new `ThermalCamera` instance by searching for the device
     /// with the specified USB Vendor and Product ID.
     ///
